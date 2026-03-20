@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+/* ── Cyberpunk Design System ── */
+:root {
+  --cyber-bg:       #080808;
+  --cyber-panel:    #0D0D0D;
+  --cyber-panel2:   #111111;
+  --cyber-cyan:     #00FFFF;
+  --cyber-magenta:  #FF00FF;
+  --cyber-yellow:   #FFE600;
+  --cyber-text:     #E2E8F0;
+  --cyber-muted:    rgba(255,255,255,0.5);
+  --cyber-border:   rgba(0,255,255,0.25);
+  --cyber-border-m: rgba(255,0,255,0.25);
+
+  --glow-cyan:    0 0 8px rgba(0,255,255,0.7),  0 0 24px rgba(0,255,255,0.25);
+  --glow-magenta: 0 0 8px rgba(255,0,255,0.7),  0 0 24px rgba(255,0,255,0.25);
+  --glow-text:    0 0 6px rgba(0,255,255,0.9);
+}
+
+@layer base {
+  body {
+    font-family: 'Fira Code', ui-monospace, 'Cascadia Code', monospace;
+    background: var(--cyber-bg);
+    color: var(--cyber-text);
+    overflow-x: hidden;
+  }
+}
+
+/* ── Scanline overlay ── */
+body::after {
+  content: '';
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.06) 2px,
+    rgba(0, 0, 0, 0.06) 4px
+  );
+}
+
+/* ── Dot-grid background ── */
+.cyber-grid-bg {
+  background-image:
+    radial-gradient(circle, rgba(0,255,255,0.08) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* ── Neon glow utilities ── */
+.neon-cyan  { text-shadow: var(--glow-text); color: var(--cyber-cyan); }
+.neon-magenta { text-shadow: 0 0 6px rgba(255,0,255,0.9); color: var(--cyber-magenta); }
+
+.glow-border-cyan    { box-shadow: var(--glow-cyan),  inset 0 0 12px rgba(0,255,255,0.04); }
+.glow-border-magenta { box-shadow: var(--glow-magenta), inset 0 0 12px rgba(255,0,255,0.04); }
+
+/* ── Glitch hover keyframe ── */
+@keyframes glitch {
+  0%,100% { clip-path: inset(0 0 100% 0); transform: skewX(0deg); }
+  20%      { clip-path: inset(30% 0 50% 0); transform: skewX(-3deg); opacity: 0.8; }
+  40%      { clip-path: inset(60% 0 10% 0); transform: skewX(3deg); }
+  60%      { clip-path: inset(10% 0 70% 0); transform: skewX(-2deg); opacity: 0.9; }
+  80%      { clip-path: inset(80% 0 5%  0); transform: skewX(2deg); }
+}
+
+/* ── Flicker animation for header title ── */
+@keyframes flicker {
+  0%,19%,21%,23%,25%,54%,56%,100% { opacity: 1; }
+  20%,22%,24%,55% { opacity: 0.6; }
+}
+.cyber-flicker { animation: flicker 6s infinite; }
+
+/* ── Pulsing border ── */
+@keyframes pulse-border {
+  0%,100% { border-color: rgba(0,255,255,0.25); }
+  50%      { border-color: rgba(0,255,255,0.55); }
+}
+.cyber-pulse { animation: pulse-border 2.5s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+  body::after { display: none; }
+}

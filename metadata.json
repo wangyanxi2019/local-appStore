@@ -1,0 +1,5 @@
+{
+  "name": "iOS IPA Distribution Platform",
+  "description": "A self-hosted platform for distributing iOS IPA files with version management and QR code installation.",
+  "requestFramePermissions": []
+}
