@@ -426,30 +426,53 @@ async function startServer() {
     return;
   }
 
-  const altNames: Array<{ type: number; value?: string; ip?: string }> = [
-    { type: 2, value: 'localhost' },
-    { type: 7, ip: '127.0.0.1' },
-  ];
-  if (LAN_IP) {
-    altNames.push({ type: 2, value: LAN_IP }, { type: 7, ip: LAN_IP });
-  }
-  const pems = await selfsigned.generate(
-    [{ name: 'commonName', value: LAN_IP || 'localhost' }],
-    {
-      algorithm: 'sha256',
-      days: 365,
-      keySize: 2048,
-      extensions: [
-        { name: 'basicConstraints', cA: true },
-        { name: 'keyUsage', digitalSignature: true, keyEncipherment: true },
-        { name: 'subjectAltName', altNames },
-      ],
+  // 证书持久化：首次生成后保存到磁盘，后续启动直接复用，避免 iPhone 每次重装证书
+  const SSL_DIR = path.join(__dirname, 'ssl');
+  const CERT_PATH = path.join(SSL_DIR, 'cert.pem');
+  const KEY_PATH = path.join(SSL_DIR, 'key.pem');
+  await fs.ensureDir(SSL_DIR);
+
+  let certPem: string;
+  let keyPem: string;
+
+  if (await fs.pathExists(CERT_PATH) && await fs.pathExists(KEY_PATH)) {
+    // 复用已有证书
+    certPem = await fs.readFile(CERT_PATH, 'utf8');
+    keyPem = await fs.readFile(KEY_PATH, 'utf8');
+    console.log('  Reusing existing SSL certificate from ssl/');
+  } else {
+    // 首次生成并保存
+    const altNames: Array<{ type: 1 | 2 | 6 | 7; value?: string; ip?: string }> = [
+      { type: 2, value: 'localhost' },
+      { type: 7, ip: '127.0.0.1' },
+    ];
+    if (LAN_IP) {
+      altNames.push({ type: 2, value: LAN_IP }, { type: 7, ip: LAN_IP });
     }
-  );
-  sslCertPem = pems.cert;
+    const pems = await selfsigned.generate(
+      [{ name: 'commonName', value: LAN_IP || 'localhost' }],
+      {
+        algorithm: 'sha256',
+        days: 3650,
+        keySize: 2048,
+        extensions: [
+          { name: 'basicConstraints', cA: true },
+          { name: 'keyUsage', digitalSignature: true, keyEncipherment: true },
+          { name: 'subjectAltName', altNames },
+        ],
+      } as any
+    );
+    certPem = pems.cert;
+    keyPem = pems.private;
+    await fs.writeFile(CERT_PATH, certPem, 'utf8');
+    await fs.writeFile(KEY_PATH, keyPem, 'utf8');
+    console.log('  Generated new SSL certificate → ssl/cert.pem');
+  }
+
+  sslCertPem = certPem;
 
   const server = https.createServer(
-    { key: pems.private, cert: pems.cert },
+    { key: keyPem, cert: certPem },
     app
   );
   server.listen(PORT, '0.0.0.0', () => {
