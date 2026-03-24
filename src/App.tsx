@@ -423,7 +423,7 @@ export default function App() {
                           {app.last_upload_at && (
                             <span className="inline-flex items-center gap-1 text-[10px] font-mono text-white/50">
                               <Clock className="w-2.5 h-2.5" />
-                              {new Date(app.last_upload_at).toLocaleDateString()}
+                              {new Date(app.last_upload_at).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })}
                             </span>
                           )}
                         </div>
@@ -536,7 +536,7 @@ export default function App() {
                     <div className="flex flex-wrap items-center gap-4 text-[10px] font-mono text-white/50 justify-center md:justify-start">
                       <span className="flex items-center gap-1">
                         <Clock className="w-3 h-3" />
-                        {new Date(version.created_at).toLocaleString()}
+                        {new Date(version.created_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
                       </span>
                       <span className="flex items-center gap-1 text-[#00FFFF]/50">
                         <Shield className="w-3 h-3" />
