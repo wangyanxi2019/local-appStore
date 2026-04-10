@@ -94,6 +94,7 @@ interface AppVersion {
   id: number;
   version_number: string;
   build_number: string;
+  build_type: 'Debug' | 'Release';
   ipa_url: string;
   notes: string;
   created_at: string;
@@ -132,6 +133,7 @@ export default function App() {
   const [newIcon, setNewIcon] = useState<File | null>(null);
   const [newVersion, setNewVersion] = useState('');
   const [newBuild, setNewBuild] = useState('');
+  const [newBuildType, setNewBuildType] = useState<'Debug' | 'Release'>('Debug');
   const [newNotes, setNewNotes] = useState('');
   const [newIpa, setNewIpa] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);   // 0-100
@@ -195,6 +197,7 @@ export default function App() {
     appId: number,
     versionNumber: string,
     buildNumber: string,
+    buildType: 'Debug' | 'Release',
     notes: string,
   ): Promise<void> => {
     const uploadId = crypto.randomUUID();
@@ -232,6 +235,7 @@ export default function App() {
         app_id: appId,
         version_number: versionNumber,
         build_number: buildNumber,
+        build_type: buildType,
         notes,
       }),
     });
@@ -255,9 +259,9 @@ export default function App() {
     setUploadError(null);
 
     try {
-      await uploadIpaInChunks(newIpa, selectedApp.id, newVersion, newBuild, newNotes);
+      await uploadIpaInChunks(newIpa, selectedApp.id, newVersion, newBuild, newBuildType, newNotes);
       setIsUploadModalOpen(false);
-      setNewVersion(''); setNewBuild(''); setNewNotes(''); setNewIpa(null);
+      setNewVersion(''); setNewBuild(''); setNewBuildType('Debug'); setNewNotes(''); setNewIpa(null);
       setUploadProgress(0);
       fetchAppDetails(selectedApp.id);
     } catch (err: any) {
@@ -423,7 +427,7 @@ export default function App() {
                           {app.last_upload_at && (
                             <span className="inline-flex items-center gap-1 text-[10px] font-mono text-white/50">
                               <Clock className="w-2.5 h-2.5" />
-                              {new Date(app.last_upload_at.endsWith('Z') ? app.last_upload_at : app.last_upload_at + 'Z').toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })}
+                              {new Date(app.last_upload_at).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })}
                             </span>
                           )}
                         </div>
@@ -529,6 +533,16 @@ export default function App() {
                           构建 {version.build_number}
                         </span>
                       )}
+                      {/* Debug / Release 色标 */}
+                      <span
+                        className="text-[10px] font-mono font-bold px-2 py-0.5 border inline-block uppercase tracking-widest"
+                        style={version.build_type === 'Release'
+                          ? { color: '#FF4D4D', borderColor: 'rgba(255,77,77,0.5)', background: 'rgba(255,77,77,0.08)', textShadow: '0 0 6px rgba(255,77,77,0.5)' }
+                          : { color: '#39FF14', borderColor: 'rgba(57,255,20,0.5)', background: 'rgba(57,255,20,0.08)', textShadow: '0 0 6px rgba(57,255,20,0.5)' }
+                        }
+                      >
+                        {version.build_type ?? 'Debug'}
+                      </span>
                     </div>
                     <p className="text-[11px] font-mono text-white/50 mb-3 line-clamp-2">
                       {version.notes || '// 暂无更新说明'}
@@ -696,6 +710,32 @@ export default function App() {
                         placeholder="101"
                         disabled={uploading}
                       />
+                    </div>
+                  </div>
+
+                  {/* Debug / Release 切换 */}
+                  <div>
+                    <label className={cyberLabel}>构建模式</label>
+                    <div className="flex gap-3">
+                      {(['Debug', 'Release'] as const).map(type => {
+                        const isDebug = type === 'Debug';
+                        const active = newBuildType === type;
+                        const activeStyle = isDebug
+                          ? 'border-[#39FF14] text-[#39FF14] bg-[rgba(57,255,20,0.1)] shadow-[0_0_10px_rgba(57,255,20,0.3)]'
+                          : 'border-[#FF4D4D] text-[#FF4D4D] bg-[rgba(255,77,77,0.1)] shadow-[0_0_10px_rgba(255,77,77,0.3)]';
+                        const inactiveStyle = 'border-[rgba(0,255,255,0.2)] text-white/40 bg-transparent';
+                        return (
+                          <button
+                            key={type}
+                            type="button"
+                            disabled={uploading}
+                            onClick={() => setNewBuildType(type)}
+                            className={`flex-1 py-2 font-mono text-sm font-bold uppercase tracking-widest border transition-all duration-200 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${active ? activeStyle : inactiveStyle}`}
+                          >
+                            {type}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                   <div>

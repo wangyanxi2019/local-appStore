@@ -1,0 +1,21 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+
+# 运行时数据（IPA / 图标 / 分片 / 数据库）
+uploads/
+data.db
+
+# 环境变量（包含敏感信息）
+.env
+.env.local
+.env.*.local
+
+# SSL 证书（本地自签名，不需要共享）
+ssl/
+
+# 系统文件
+.DS_Store
+Thumbs.db

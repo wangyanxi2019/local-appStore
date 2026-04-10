@@ -75,12 +75,43 @@ db.exec(`
     app_id INTEGER NOT NULL,
     version_number TEXT NOT NULL,
     build_number TEXT,
+    build_type TEXT NOT NULL DEFAULT 'Debug',
     ipa_url TEXT NOT NULL,
     notes TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (app_id) REFERENCES apps (id) ON DELETE CASCADE
   );
 `);
+
+// 兴趣迁移：为已有数据库中缺少 build_type 字段的老表添加该列
+try {
+  db.exec(`ALTER TABLE versions ADD COLUMN build_type TEXT NOT NULL DEFAULT 'Debug'`);
+} catch {
+  // 列已存在，跳过
+}
+
+// ── 历史版本清理策略 ────────────────────────────────────────────────────────
+// 每个 App 最多保留最近 KEEP_VERSIONS 个版本（默认 3），超出部分连同 IPA 文件一并删除
+// 可在 .env 中设置 KEEP_VERSIONS=5 自定义保留数量
+const KEEP_VERSIONS = Math.max(1, parseInt(process.env.KEEP_VERSIONS || '3', 10));
+
+function cleanupOldVersions(appId: number | string) {
+  const all = db
+    .prepare('SELECT id, ipa_url FROM versions WHERE app_id = ? ORDER BY id DESC')
+    .all(appId) as Array<{ id: number; ipa_url: string }>;
+  if (all.length <= KEEP_VERSIONS) return;
+
+  const toDelete = all.slice(KEEP_VERSIONS);
+  for (const v of toDelete) {
+    // 删除磁盘上的 IPA 文件（异步，失败不阻断流程）
+    const rel = v.ipa_url.replace(/^\/uploads\//, '');
+    const filePath = path.join(UPLOADS_DIR, ...rel.split('/'));
+    fs.remove(filePath).catch(() => {});
+    // 删除数据库记录
+    db.prepare('DELETE FROM versions WHERE id = ?').run(v.id);
+    console.log(`[cleanup] Deleted version #${v.id} (app_id=${appId}, file=${rel})`);
+  }
+}
 
 const app = express();
 app.use(cors());
@@ -162,15 +193,18 @@ app.get('/api/apps/:id', (req, res) => {
 });
 
 app.post('/api/apps/:id/versions', upload.single('ipa'), (req, res) => {
-  const { version_number, build_number, notes } = req.body;
+  const { version_number, build_number, build_type, notes } = req.body;
   const ipa_url = req.file ? `/uploads/ipas/${req.file.filename}` : null;
 
   if (!ipa_url) return res.status(400).json({ error: 'IPA file is required' });
 
-  db.prepare('INSERT INTO versions (app_id, version_number, build_number, ipa_url, notes) VALUES (?, ?, ?, ?, ?)')
-    .run(req.params.id, version_number, build_number, ipa_url, notes);
+  db.prepare('INSERT INTO versions (app_id, version_number, build_number, build_type, ipa_url, notes) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(req.params.id, version_number, build_number, build_type || 'Debug', ipa_url, notes);
 
   db.prepare('UPDATE apps SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(req.params.id);
+
+  // 自动清理超出保留策略的历史版本
+  cleanupOldVersions(req.params.id);
 
   res.json({ success: true });
 });
@@ -198,7 +232,7 @@ app.post('/api/upload/chunk', chunkUpload.single('chunk'), async (req, res) => {
 /** 合并分片并写入版本记录：POST /api/upload/complete */
 app.post('/api/upload/complete', express.json({ limit: '1mb' }), async (req, res) => {
   try {
-    const { uploadId, totalChunks, filename, app_id, version_number, build_number, notes } = req.body;
+    const { uploadId, totalChunks, filename, app_id, version_number, build_number, build_type, notes } = req.body;
     if (!uploadId || !totalChunks || !filename || !app_id || !version_number) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
@@ -231,9 +265,12 @@ app.post('/api/upload/complete', express.json({ limit: '1mb' }), async (req, res
     await fs.remove(chunkDir);
 
     const ipa_url = `/uploads/ipas/${finalFilename}`;
-    db.prepare('INSERT INTO versions (app_id, version_number, build_number, ipa_url, notes) VALUES (?, ?, ?, ?, ?)')
-      .run(app_id, version_number, build_number || '', ipa_url, notes || '');
+    db.prepare('INSERT INTO versions (app_id, version_number, build_number, build_type, ipa_url, notes) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(app_id, version_number, build_number || '', build_type || 'Debug', ipa_url, notes || '');
     db.prepare('UPDATE apps SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(app_id);
+
+    // 自动清理超出保留策略的历史版本
+    cleanupOldVersions(app_id);
 
     res.json({ success: true });
   } catch (err: any) {
