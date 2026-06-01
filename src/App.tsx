@@ -138,7 +138,6 @@ export default function App() {
   const [uploadProgress, setUploadProgress] = useState(0);   // 0-100
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const uploadIdRef = useRef<string | null>(null);
 
   const [deleteTarget, setDeleteTarget] = useState<AppInfo | null>(null);
   const [deletePasscode, setDeletePasscode] = useState('');
@@ -198,76 +197,40 @@ export default function App() {
     } catch (err) { console.error('Failed to create app', err); }
   };
 
-  /**
-   * 分片上传 IPA：10 MB 分片 + 4 路并发，兼顾上传速度和进度精度。
-   * 并发 worker 从队列中取下一个分片索引，失败立即中止并抛出异常。
-   */
-  const uploadIpaInChunks = async (
+  const uploadIpa = (
     file: File,
     appId: number,
     versionNumber: string,
     buildNumber: string,
     buildType: 'Debug' | 'Release',
     notes: string,
-  ): Promise<void> => {
-    const CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB
-    const CONCURRENCY = 4;
+  ): Promise<void> => new Promise((resolve, reject) => {
+    const fd = new FormData();
+    fd.append('ipa', file, file.name);
+    fd.append('app_id', String(appId));
+    fd.append('version_number', versionNumber);
+    fd.append('build_number', buildNumber);
+    fd.append('build_type', buildType);
+    fd.append('notes', notes);
 
-    const uploadId = crypto.randomUUID();
-    uploadIdRef.current = uploadId;
-    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-    let completedChunks = 0;
-
-    const uploadChunk = async (i: number) => {
-      const start = i * CHUNK_SIZE;
-      const blob = file.slice(start, Math.min(start + CHUNK_SIZE, file.size));
-      const fd = new FormData();
-      fd.append('uploadId', uploadId);
-      fd.append('chunkIndex', String(i));
-      fd.append('chunk', blob, file.name);
-
-      const res = await apiFetch('/api/upload/chunk', { method: 'POST', body: fd });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: 'chunk failed' }));
-        throw new Error(err.error || `Chunk ${i} failed`);
-      }
-      completedChunks++;
-      setUploadProgress(Math.round((completedChunks / totalChunks) * 95));
+    const xhr = new XMLHttpRequest();
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable)
+        setUploadProgress(Math.round((e.loaded / e.total) * 100));
     };
-
-    // Worker-pool：维持 CONCURRENCY 路并发，直到队列耗尽
-    const queue = Array.from({ length: totalChunks }, (_, i) => i);
-    await Promise.all(
-      Array.from({ length: Math.min(CONCURRENCY, totalChunks) }, async () => {
-        while (queue.length > 0) {
-          const idx = queue.shift()!;
-          await uploadChunk(idx);
-        }
-      })
-    );
-
-    // 合并分片
-    const res = await apiFetch('/api/upload/complete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        uploadId,
-        totalChunks,
-        filename: file.name,
-        app_id: appId,
-        version_number: versionNumber,
-        build_number: buildNumber,
-        build_type: buildType,
-        notes,
-      }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'merge failed' }));
-      throw new Error(err.error || 'Merge failed');
-    }
-    setUploadProgress(100);
-    uploadIdRef.current = null;
-  };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        setUploadProgress(100);
+        resolve();
+      } else {
+        const err = JSON.parse(xhr.responseText || '{}');
+        reject(new Error(err.error || 'Upload failed'));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Network error'));
+    xhr.open('POST', '/api/upload/ipa');
+    xhr.send(fd);
+  });
 
   const handleUploadVersion = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -281,7 +244,7 @@ export default function App() {
     setUploadError(null);
 
     try {
-      await uploadIpaInChunks(newIpa, selectedApp.id, newVersion, newBuild, newBuildType, newNotes);
+      await uploadIpa(newIpa, selectedApp.id, newVersion, newBuild, newBuildType, newNotes);
       setIsUploadModalOpen(false);
       setNewVersion(''); setNewBuild(''); setNewBuildType('Debug'); setNewNotes(''); setNewIpa(null);
       setUploadProgress(0);
@@ -289,11 +252,6 @@ export default function App() {
     } catch (err: any) {
       console.error('Failed to upload version', err);
       setUploadError(err.message || '上传失败，请重试');
-      // 通知服务端清理临时分片
-      if (uploadIdRef.current) {
-        apiFetch(`/api/upload/abort/${uploadIdRef.current}`, { method: 'DELETE' }).catch(() => { });
-        uploadIdRef.current = null;
-      }
     } finally {
       setUploading(false);
     }

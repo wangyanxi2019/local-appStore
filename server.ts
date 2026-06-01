@@ -135,13 +135,16 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Multer for chunked upload — memory storage, 20 MB per chunk
-const chunkUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 },
+const ipaUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, IPAS_DIR),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname) || '.ipa';
+      cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
+    },
+  }),
+  limits: { fileSize: 500 * 1024 * 1024 },
 });
-const CHUNKS_DIR = path.join(UPLOADS_DIR, 'chunks');
-fs.ensureDirSync(CHUNKS_DIR);
 
 // 供前端获取对外可访问的 baseUrl 及部署模式
 app.get('/api/base-url', (_req, res) => {
@@ -246,79 +249,22 @@ app.delete('/api/apps/:id', express.json({ limit: '1kb' }), async (req, res) => 
   res.json({ success: true });
 });
 
-/** 接收单个分片：POST /api/upload/chunk */
-app.post('/api/upload/chunk', chunkUpload.single('chunk'), async (req, res) => {
+/** 上传 IPA 并写入版本记录：POST /api/upload/ipa */
+app.post('/api/upload/ipa', ipaUpload.single('ipa'), (req, res) => {
   try {
-    const { uploadId, chunkIndex } = req.body;
-    if (!uploadId || chunkIndex === undefined || !req.file) {
-      return res.status(400).json({ error: 'Missing uploadId, chunkIndex or chunk data' });
-    }
-    const chunkDir = path.join(CHUNKS_DIR, uploadId);
-    await fs.ensureDir(chunkDir);
-    const chunkPath = path.join(chunkDir, String(chunkIndex));
-    await fs.writeFile(chunkPath, req.file.buffer);
-    res.json({ ok: true, chunkIndex });
-  } catch (err: any) {
-    console.error('chunk upload error:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/** 合并分片并写入版本记录：POST /api/upload/complete */
-app.post('/api/upload/complete', express.json({ limit: '1mb' }), async (req, res) => {
-  try {
-    const { uploadId, totalChunks, filename, app_id, version_number, build_number, build_type, notes } = req.body;
-    if (!uploadId || !totalChunks || !filename || !app_id || !version_number) {
+    const { app_id, version_number, build_number, build_type, notes } = req.body;
+    if (!req.file || !app_id || !version_number)
       return res.status(400).json({ error: 'Missing required fields' });
-    }
-    const chunkDir = path.join(CHUNKS_DIR, uploadId);
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    const ext = path.extname(filename) || '.ipa';
-    const finalFilename = uniqueSuffix + ext;
-    const finalPath = path.join(IPAS_DIR, finalFilename);
 
-    // 流式合并分片，避免整文件读入内存
-    const writeStream = fs.createWriteStream(finalPath);
-    await new Promise<void>((resolve, reject) => {
-      writeStream.on('error', reject);
-      writeStream.on('finish', resolve);
-      (async () => {
-        try {
-          for (let i = 0; i < totalChunks; i++) {
-            const chunkPath = path.join(chunkDir, String(i));
-            const buf = await fs.readFile(chunkPath);
-            writeStream.write(buf);
-          }
-          writeStream.end();
-        } catch (e) {
-          writeStream.destroy(e as Error);
-        }
-      })();
-    });
-
-    await fs.remove(chunkDir);
-
-    const ipa_url = `/uploads/ipas/${finalFilename}`;
-    db.prepare('INSERT INTO versions (app_id, version_number, build_number, build_type, ipa_url, notes) VALUES (?, ?, ?, ?, ?, ?)')
+    const ipa_url = `/uploads/ipas/${req.file.filename}`;
+    db.prepare('INSERT INTO versions (app_id, version_number, build_number, build_type, ipa_url, notes) VALUES (?,?,?,?,?,?)')
       .run(app_id, version_number, build_number || '', build_type || 'Debug', ipa_url, notes || '');
     db.prepare('UPDATE apps SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(app_id);
     cleanupOldVersions(app_id);
-
     res.json({ success: true });
   } catch (err: any) {
-    console.error('upload complete error:', err);
+    console.error('upload ipa error:', err);
     res.status(500).json({ error: err.message });
-  }
-});
-
-/** 清理中止的上传临时分片：DELETE /api/upload/abort/:uploadId */
-app.delete('/api/upload/abort/:uploadId', async (req, res) => {
-  try {
-    const chunkDir = path.join(CHUNKS_DIR, req.params.uploadId);
-    await fs.remove(chunkDir);
-    res.json({ ok: true });
-  } catch {
-    res.json({ ok: true });
   }
 });
 
