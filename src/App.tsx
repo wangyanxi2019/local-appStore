@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Plus, Upload, QrCode, ArrowLeft, Package, Clock, Shield, ChevronRight, Info, Zap } from 'lucide-react';
+import { Plus, Upload, QrCode, ArrowLeft, Package, Clock, Shield, ChevronRight, Info, Zap, Trash2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
@@ -63,13 +63,14 @@ function CyberButton({
   children: React.ReactNode;
   onClick?: () => void;
   type?: 'button' | 'submit';
-  variant?: 'cyan' | 'ghost';
+  variant?: 'cyan' | 'ghost' | 'red';
   disabled?: boolean;
   className?: string;
 }) {
   const styles = {
     cyan: 'bg-[#00FFFF]/10 border border-[#00FFFF]/60 text-[#00FFFF] hover:bg-[#00FFFF]/20 hover:border-[#00FFFF] hover:shadow-[0_0_12px_rgba(0,255,255,0.4)]',
     ghost: 'bg-transparent border border-[rgba(0,255,255,0.2)] text-[#00FFFF]/60 hover:border-[rgba(0,255,255,0.5)] hover:text-[#00FFFF]',
+    red: 'bg-[#FF4D4D]/10 border border-[#FF4D4D]/60 text-[#FF4D4D] hover:bg-[#FF4D4D]/20 hover:border-[#FF4D4D] hover:shadow-[0_0_12px_rgba(255,77,77,0.4)]',
   };
   return (
     <button
@@ -138,6 +139,11 @@ export default function App() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const uploadIdRef = useRef<string | null>(null);
+
+  const [deleteTarget, setDeleteTarget] = useState<AppInfo | null>(null);
+  const [deletePasscode, setDeletePasscode] = useState('');
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   useEffect(() => { fetchApps(); }, []);
 
@@ -290,6 +296,29 @@ export default function App() {
       }
     } finally {
       setUploading(false);
+    }
+  };
+
+  const handleDeleteApp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!deleteTarget) return;
+    setDeleteLoading(true);
+    setDeleteError(null);
+    try {
+      const res = await apiFetch(`/api/apps/${deleteTarget.id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passcode: deletePasscode }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '删除失败');
+      setDeleteTarget(null);
+      setDeletePasscode('');
+      fetchApps();
+    } catch (err: any) {
+      setDeleteError(err.message);
+    } finally {
+      setDeleteLoading(false);
     }
   };
 
@@ -451,7 +480,21 @@ export default function App() {
                         </div>
                       </div>
 
-                      <ChevronRight className="w-4 h-4 text-white/40 group-hover:text-[#00FFFF] transition-colors duration-200 flex-shrink-0 mt-1" />
+                      <div className="flex flex-col items-center gap-2 flex-shrink-0">
+                        <ChevronRight className="w-4 h-4 text-white/40 group-hover:text-[#00FFFF] transition-colors duration-200" />
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleteTarget(app);
+                            setDeletePasscode('');
+                            setDeleteError(null);
+                          }}
+                          className="p-1 text-white/20 hover:text-[#FF4D4D] hover:drop-shadow-[0_0_4px_rgba(255,77,77,0.8)] transition-all duration-200 cursor-pointer"
+                          aria-label="删除应用"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   </CyberCard>
                 </motion.div>
@@ -821,6 +864,78 @@ export default function App() {
                   </div>
                 </form>
               </CyberCard>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* ── 删除应用弹窗 ── */}
+      <AnimatePresence>
+        {deleteTarget && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => { if (!deleteLoading) { setDeleteTarget(null); setDeletePasscode(''); setDeleteError(null); } }}
+              className="absolute inset-0 bg-black/80"
+            />
+            <motion.div
+              initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }}
+              transition={{ duration: 0.2 }}
+              className="relative w-full max-w-sm"
+            >
+              <div className="relative bg-[#0D0D0D] border border-[rgba(255,77,77,0.35)] p-7">
+                <CyberCorners color="#FF4D4D" />
+
+                <div className="mb-5">
+                  <p className="text-[10px] font-mono text-[#FF4D4D]/50 uppercase tracking-widest mb-1">// 危险操作</p>
+                  <h3 className="text-lg font-mono font-bold uppercase tracking-wider text-[#FF4D4D]"
+                    style={{ textShadow: '0 0 6px rgba(255,77,77,0.5)' }}>
+                    删除应用
+                  </h3>
+                  <p className="text-[11px] font-mono text-white/50 mt-2">
+                    将删除 <span className="text-[#FF4D4D]/80 font-bold">{deleteTarget.name}</span> 及其所有版本和 IPA 文件，操作不可撤销。
+                  </p>
+                </div>
+
+                <form onSubmit={handleDeleteApp} className="space-y-4">
+                  <div>
+                    <label className="block text-[10px] font-mono font-semibold text-[#FF4D4D]/70 mb-1.5 uppercase tracking-[0.15em]">
+                      输入口令确认
+                    </label>
+                    <input
+                      required
+                      type="password"
+                      autoFocus
+                      value={deletePasscode}
+                      onChange={e => { setDeletePasscode(e.target.value); setDeleteError(null); }}
+                      placeholder="••••"
+                      disabled={deleteLoading}
+                      className="w-full px-4 py-2.5 bg-[#080808] border border-[rgba(255,77,77,0.25)] text-[#E2E8F0] font-mono text-sm placeholder:text-white/30 focus:border-[#FF4D4D] focus:outline-none focus:ring-1 focus:ring-[#FF4D4D]/30 transition-all duration-200 disabled:opacity-40"
+                    />
+                  </div>
+
+                  {deleteError && (
+                    <p className="text-[11px] font-mono text-[#FF4D4D]/80 border border-[#FF4D4D]/20 bg-[#FF4D4D]/5 px-3 py-2">
+                      ✕ {deleteError}
+                    </p>
+                  )}
+
+                  <div className="pt-2 flex gap-3">
+                    <CyberButton
+                      variant="ghost"
+                      className="flex-1"
+                      disabled={deleteLoading}
+                      onClick={() => { setDeleteTarget(null); setDeletePasscode(''); setDeleteError(null); }}
+                    >
+                      取消
+                    </CyberButton>
+                    <CyberButton variant="red" type="submit" disabled={deleteLoading || !deletePasscode} className="flex-1">
+                      <Trash2 className="w-3.5 h-3.5" />
+                      {deleteLoading ? '删除中...' : '确认删除'}
+                    </CyberButton>
+                  </div>
+                </form>
+              </div>
             </motion.div>
           </div>
         )}

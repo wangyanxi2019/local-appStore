@@ -212,6 +212,40 @@ app.post('/api/apps/:id/versions', upload.single('ipa'), (req, res) => {
 
 // ── 分片上传接口 ──────────────────────────────────────────────────────────────
 
+// ── 删除应用（含所有版本文件） ────────────────────────────────────────────────
+app.delete('/api/apps/:id', express.json({ limit: '1kb' }), async (req, res) => {
+  const { passcode } = req.body as { passcode?: string };
+  const expected = process.env.DELETE_PASSCODE || 'lion';
+  if (passcode !== expected) {
+    return res.status(403).json({ error: '口令错误' });
+  }
+
+  const appData = db.prepare('SELECT icon_url FROM apps WHERE id = ?').get(req.params.id) as
+    | { icon_url: string | null }
+    | undefined;
+  if (!appData) return res.status(404).json({ error: 'App not found' });
+
+  const versions = db
+    .prepare('SELECT ipa_url FROM versions WHERE app_id = ?')
+    .all(req.params.id) as Array<{ ipa_url: string }>;
+
+  // 删除 IPA 文件
+  for (const v of versions) {
+    const rel = v.ipa_url.replace(/^\/uploads\//, '');
+    await fs.remove(path.join(UPLOADS_DIR, ...rel.split('/'))).catch(() => {});
+  }
+  // 删除图标文件
+  if (appData.icon_url) {
+    const rel = appData.icon_url.replace(/^\/uploads\//, '');
+    await fs.remove(path.join(UPLOADS_DIR, ...rel.split('/'))).catch(() => {});
+  }
+
+  // ON DELETE CASCADE 会自动清理 versions 表
+  db.prepare('DELETE FROM apps WHERE id = ?').run(req.params.id);
+  console.log(`[delete] App #${req.params.id} deleted`);
+  res.json({ success: true });
+});
+
 /** 接收单个分片：POST /api/upload/chunk */
 app.post('/api/upload/chunk', chunkUpload.single('chunk'), async (req, res) => {
   try {
