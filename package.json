@@ -1,12 +1,13 @@
 {
-  "name": "react-example",
+  "name": "local-app-store",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "dev:ngrok": "USE_NGROK=1 DISABLE_HMR=true tsx server.ts",
-    "build": "vite build",
+    "build": "NODE_ENV=production vite build",
+    "start": "NODE_ENV=production tsx server.ts",
+    "deploy": "npm run build && npm run start",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
@@ -28,7 +29,6 @@
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "multer": "^2.1.1",
-    "ngrok": "^5.0.0-beta.2",
     "qrcode.react": "^4.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

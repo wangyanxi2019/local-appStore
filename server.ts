@@ -1,4 +1,10 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
+
+// 根据 NODE_ENV 加载对应配置文件（dev → .env.development，prod → .env.production）
+// .env 作为公共回退，不会覆盖已加载的变量
+const _nodeEnv = process.env.NODE_ENV || 'development';
+dotenv.config({ path: `.env.${_nodeEnv}` });
+dotenv.config(); // .env fallback
 import express from 'express';
 import http from 'http';
 import https from 'https';
@@ -6,7 +12,6 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
-import { execSync, spawn } from 'child_process';
 import multer from 'multer';
 import Database from 'better-sqlite3';
 import fs from 'fs-extra';
@@ -14,7 +19,8 @@ import cors from 'cors';
 import selfsigned from 'selfsigned';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = 3000;
+const PORT = parseInt(process.env.PORT || '3000', 10);
+const BEHIND_PROXY = process.env.BEHIND_PROXY === 'true';
 
 /** 获取本机局域网 IP，供手机扫码安装时使用（手机无法访问 localhost） */
 function getLocalNetworkIP(): string | null {
@@ -44,8 +50,7 @@ function getLocalNetworkIP(): string | null {
 }
 
 const LAN_IP = getLocalNetworkIP();
-const USE_NGROK = process.env.USE_NGROK === '1' || process.env.USE_NGROK === 'true';
-// 安装链接的根 URL：ngrok 模式下由隧道地址覆盖；否则为 APP_URL 或本机 HTTPS
+// 对外地址：优先取 APP_URL，其次本机 LAN IP（本地模式），最后 localhost
 let _baseUrl = process.env.APP_URL || (LAN_IP ? `https://${LAN_IP}:${PORT}` : `https://localhost:${PORT}`);
 function getBaseUrl() {
   return _baseUrl.replace(/\/$/, '');
@@ -83,7 +88,6 @@ db.exec(`
   );
 `);
 
-// 兴趣迁移：为已有数据库中缺少 build_type 字段的老表添加该列
 try {
   db.exec(`ALTER TABLE versions ADD COLUMN build_type TEXT NOT NULL DEFAULT 'Debug'`);
 } catch {
@@ -91,8 +95,6 @@ try {
 }
 
 // ── 历史版本清理策略 ────────────────────────────────────────────────────────
-// 每个 App 最多保留最近 KEEP_VERSIONS 个版本（默认 3），超出部分连同 IPA 文件一并删除
-// 可在 .env 中设置 KEEP_VERSIONS=5 自定义保留数量
 const KEEP_VERSIONS = Math.max(1, parseInt(process.env.KEEP_VERSIONS || '3', 10));
 
 function cleanupOldVersions(appId: number | string) {
@@ -103,11 +105,9 @@ function cleanupOldVersions(appId: number | string) {
 
   const toDelete = all.slice(KEEP_VERSIONS);
   for (const v of toDelete) {
-    // 删除磁盘上的 IPA 文件（异步，失败不阻断流程）
     const rel = v.ipa_url.replace(/^\/uploads\//, '');
     const filePath = path.join(UPLOADS_DIR, ...rel.split('/'));
     fs.remove(filePath).catch(() => {});
-    // 删除数据库记录
     db.prepare('DELETE FROM versions WHERE id = ?').run(v.id);
     console.log(`[cleanup] Deleted version #${v.id} (app_id=${appId}, file=${rel})`);
   }
@@ -115,10 +115,13 @@ function cleanupOldVersions(appId: number | string) {
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '200mb' }));
-app.use(express.urlencoded({ limit: '200mb', extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
-// Multer setup for file uploads
+// 信任代理（nginx 反代时获取真实 IP）
+if (BEHIND_PROXY) app.set('trust proxy', 1);
+
+// Multer for icon / single-shot ipa upload
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     if (file.fieldname === 'icon') cb(null, ICONS_DIR);
@@ -132,24 +135,24 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Multer for chunked upload — memory storage, max 200 MB per chunk for LAN uploads
+// Multer for chunked upload — memory storage, 20 MB per chunk
 const chunkUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 200 * 1024 * 1024 },
+  limits: { fileSize: 20 * 1024 * 1024 },
 });
 const CHUNKS_DIR = path.join(UPLOADS_DIR, 'chunks');
 fs.ensureDirSync(CHUNKS_DIR);
 
-// 供前端获取“对外可访问的 baseUrl”，手机扫码安装时必须用该地址
+// 供前端获取对外可访问的 baseUrl 及部署模式
 app.get('/api/base-url', (_req, res) => {
-  res.json({ baseUrl: getBaseUrl() });
+  res.json({ baseUrl: getBaseUrl(), behindProxy: BEHIND_PROXY });
 });
 
-// 供 iPhone 下载并信任自签名证书（设置 → 通用 → 关于本机 → 证书信任设置）
+// 供 iPhone 下载并信任自签名证书（仅本地模式有效）
 let sslCertPem: string | null = null;
 app.get('/api/install-cert', (_req, res) => {
   if (!sslCertPem) {
-    return res.status(503).send('HTTPS cert not ready');
+    return res.status(503).send('Not available in proxy mode');
   }
   res.setHeader('Content-Type', 'application/x-x509-ca-cert');
   res.setHeader('Content-Disposition', 'attachment; filename="ipa-distribution.cer"');
@@ -185,7 +188,7 @@ app.post('/api/apps', upload.single('icon'), (req, res) => {
 });
 
 app.get('/api/apps/:id', (req, res) => {
-  const appData = db.prepare('SELECT * FROM apps WHERE id = ?').get(req.params.id);
+  const appData = db.prepare('SELECT * FROM apps WHERE id = ?').get(req.params.id) as Record<string, unknown> | undefined;
   if (!appData) return res.status(404).json({ error: 'App not found' });
 
   const versions = db.prepare('SELECT * FROM versions WHERE app_id = ? ORDER BY created_at DESC').all(req.params.id);
@@ -202,8 +205,6 @@ app.post('/api/apps/:id/versions', upload.single('ipa'), (req, res) => {
     .run(req.params.id, version_number, build_number, build_type || 'Debug', ipa_url, notes);
 
   db.prepare('UPDATE apps SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(req.params.id);
-
-  // 自动清理超出保留策略的历史版本
   cleanupOldVersions(req.params.id);
 
   res.json({ success: true });
@@ -242,7 +243,7 @@ app.post('/api/upload/complete', express.json({ limit: '1mb' }), async (req, res
     const finalFilename = uniqueSuffix + ext;
     const finalPath = path.join(IPAS_DIR, finalFilename);
 
-    // 顺序合并所有分片
+    // 流式合并分片，避免整文件读入内存
     const writeStream = fs.createWriteStream(finalPath);
     await new Promise<void>((resolve, reject) => {
       writeStream.on('error', reject);
@@ -261,15 +262,12 @@ app.post('/api/upload/complete', express.json({ limit: '1mb' }), async (req, res
       })();
     });
 
-    // 清理临时分片
     await fs.remove(chunkDir);
 
     const ipa_url = `/uploads/ipas/${finalFilename}`;
     db.prepare('INSERT INTO versions (app_id, version_number, build_number, build_type, ipa_url, notes) VALUES (?, ?, ?, ?, ?, ?)')
       .run(app_id, version_number, build_number || '', build_type || 'Debug', ipa_url, notes || '');
     db.prepare('UPDATE apps SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(app_id);
-
-    // 自动清理超出保留策略的历史版本
     cleanupOldVersions(app_id);
 
     res.json({ success: true });
@@ -286,7 +284,7 @@ app.delete('/api/upload/abort/:uploadId', async (req, res) => {
     await fs.remove(chunkDir);
     res.json({ ok: true });
   } catch {
-    res.json({ ok: true }); // 目录不存在也没关系
+    res.json({ ok: true });
   }
 });
 
@@ -372,7 +370,7 @@ app.use('/uploads', express.static(UPLOADS_DIR, {
   },
 }));
 
-// 全局错误抓取（防止 MulterError 返回 HTML 导致前端 parse 失败）
+// 全局错误抓取
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error('Global Error Middleware:', err);
   res.status(500).json({ error: err.message || 'Internal Server Error' });
@@ -394,76 +392,18 @@ async function startServer() {
     });
   }
 
-  if (USE_NGROK) {
+  // ── 反代模式（宝塔 Nginx 处理 SSL）────────────────────────────────────────
+  if (BEHIND_PROXY) {
     const server = http.createServer(app);
-    server.listen(PORT, '0.0.0.0', async () => {
-      console.log(`Server (HTTP) running on http://localhost:${PORT}`);
-      try {
-        try {
-          if (process.platform !== 'win32') execSync('pkill -f ngrok 2>/dev/null || true', { stdio: 'ignore' });
-        } catch {
-          /* ignore */
-        }
-        await new Promise((r) => setTimeout(r, 600));
-        const binPath = path.join(__dirname, 'node_modules', 'ngrok', 'bin', 'ngrok');
-        const child = spawn(binPath, ['http', String(PORT)], {
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        const getUrlFromApi = (): Promise<string> =>
-          fetch('http://127.0.0.1:4040/api/tunnels')
-            .then((r) => r.json() as Promise<{ tunnels?: Array<{ public_url: string }> }>)
-            .then((j) => {
-              const u = j.tunnels?.[0]?.public_url;
-              if (u && u.startsWith('https://')) return u.replace(/\/$/, '');
-              throw new Error('no tunnel');
-            });
-        let publicUrl: string | null = null;
-        const fromStdout = new Promise<string>((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error('timeout')), 18000);
-          const onData = (data: Buffer) => {
-            const match = data.toString().match(/https:\/\/[a-z0-9-]+\.(ngrok(-free)?\.app|ngrok\.io)[^\s"'<>)*,]*/i);
-            if (match) {
-              clearTimeout(timeout);
-              resolve(match[0].replace(/[.,)\]\s]+$/, ''));
-            }
-          };
-          child.stdout?.on('data', onData);
-          child.stderr?.on('data', onData);
-          child.on('error', (e) => {
-            clearTimeout(timeout);
-            reject(e);
-          });
-        });
-        try {
-          publicUrl = await fromStdout;
-        } catch {
-          for (let i = 0; i < 30; i++) {
-            await new Promise((r) => setTimeout(r, 500));
-            try {
-              publicUrl = await getUrlFromApi();
-              break;
-            } catch {
-              if (i === 29) throw new Error('ngrok tunnel not ready');
-            }
-          }
-        }
-        if (!publicUrl) throw new Error('ngrok tunnel not ready');
-        publicUrl = publicUrl.replace(/\/$/, '');
-        _baseUrl = publicUrl;
-        console.log('');
-        console.log('  ngrok tunnel (HTTPS):', publicUrl);
-        console.log('  → Refresh the page in your browser, then scan the QR code on your phone to install.');
-        console.log('');
-      } catch (err) {
-        console.error('  ngrok failed:', err);
-        console.log('  Ensure no other ngrok is running (pkill -f ngrok). Or run ngrok manually: npx ngrok http 3000');
-        console.log('  Then set APP_URL in .env to the ngrok URL and restart with npm run dev.');
-      }
+    server.listen(PORT, '127.0.0.1', () => {
+      console.log(`Server (HTTP) running on http://127.0.0.1:${PORT}`);
+      console.log(`Public URL: ${getBaseUrl()}`);
+      console.log('  Running behind reverse proxy — SSL handled by Nginx.');
     });
     return;
   }
 
-  // 证书持久化：首次生成后保存到磁盘，后续启动直接复用，避免 iPhone 每次重装证书
+  // ── 本地模式（自签名 HTTPS，手机局域网扫码安装）──────────────────────────
   const SSL_DIR = path.join(__dirname, 'ssl');
   const CERT_PATH = path.join(SSL_DIR, 'cert.pem');
   const KEY_PATH = path.join(SSL_DIR, 'key.pem');
@@ -473,12 +413,10 @@ async function startServer() {
   let keyPem: string;
 
   if (await fs.pathExists(CERT_PATH) && await fs.pathExists(KEY_PATH)) {
-    // 复用已有证书
     certPem = await fs.readFile(CERT_PATH, 'utf8');
     keyPem = await fs.readFile(KEY_PATH, 'utf8');
     console.log('  Reusing existing SSL certificate from ssl/');
   } else {
-    // 首次生成并保存
     const altNames: Array<{ type: 1 | 2 | 6 | 7; value?: string; ip?: string }> = [
       { type: 2, value: 'localhost' },
       { type: 7, ip: '127.0.0.1' },
@@ -508,22 +446,15 @@ async function startServer() {
 
   sslCertPem = certPem;
 
-  const server = https.createServer(
-    { key: keyPem, cert: certPem },
-    app
-  );
+  const server = https.createServer({ key: keyPem, cert: certPem }, app);
   server.listen(PORT, '0.0.0.0', () => {
-    const url = process.env.APP_URL;
-    if (url && url.startsWith('http://')) {
-      console.log('  Warning: APP_URL should use https:// for iOS install. Update .env to https://YOUR_IP:3000');
-    }
     console.log(`Server running on https://localhost:${PORT}`);
     if (LAN_IP) {
       console.log(`  Phone install: https://${LAN_IP}:${PORT}`);
-      console.log(`  On iPhone: open the URL above in Safari first → accept certificate → then scan QR to install.`);
-      console.log(`  Or download cert: https://${LAN_IP}:${PORT}/api/install-cert → install → Settings → General → About → Certificate Trust Settings → enable trust.`);
+      console.log(`  Download cert: https://${LAN_IP}:${PORT}/api/install-cert`);
+      console.log(`  Then: Settings → General → About → Certificate Trust Settings → enable trust.`);
     } else {
-      console.log(`  Could not detect LAN IP. Set APP_URL=https://YOUR_IP:${PORT} in .env for phone install.`);
+      console.log(`  Could not detect LAN IP. Set APP_URL=https://YOUR_IP:${PORT} in .env`);
     }
   });
 }

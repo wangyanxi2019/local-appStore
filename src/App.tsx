@@ -9,11 +9,8 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-/** ngrok 跳过浏览器警告头 */
 function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const headers = new Headers(init?.headers);
-  headers.set('ngrok-skip-browser-warning', 'true');
-  return fetch(input, { ...init, headers });
+  return fetch(input, init);
 }
 
 /** Cyberpunk 方角装饰 */
@@ -119,6 +116,7 @@ export default function App() {
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [installBaseUrl, setInstallBaseUrl] = useState<string | null>(null);
+  const [behindProxy, setBehindProxy] = useState(false);
   const lastClickRef = useRef(0);
 
   const throttleClick = (fn: () => void) => {
@@ -146,7 +144,10 @@ export default function App() {
   useEffect(() => {
     apiFetch('/api/base-url')
       .then(r => r.json())
-      .then((d: { baseUrl: string }) => setInstallBaseUrl(d.baseUrl))
+      .then((d: { baseUrl: string; behindProxy: boolean }) => {
+        setInstallBaseUrl(d.baseUrl);
+        setBehindProxy(d.behindProxy);
+      })
       .catch(() => setInstallBaseUrl(null));
   }, []);
 
@@ -191,7 +192,10 @@ export default function App() {
     } catch (err) { console.error('Failed to create app', err); }
   };
 
-  /** 分片上传 IPA：将文件切成 CHUNK_SIZE 小块逐片发送，最后调合并接口 */
+  /**
+   * 分片上传 IPA：10 MB 分片 + 4 路并发，兼顾上传速度和进度精度。
+   * 并发 worker 从队列中取下一个分片索引，失败立即中止并抛出异常。
+   */
   const uploadIpaInChunks = async (
     file: File,
     appId: number,
@@ -200,17 +204,17 @@ export default function App() {
     buildType: 'Debug' | 'Release',
     notes: string,
   ): Promise<void> => {
+    const CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB
+    const CONCURRENCY = 4;
+
     const uploadId = crypto.randomUUID();
     uploadIdRef.current = uploadId;
-    const isNgrok = window.location.hostname.includes('ngrok');
-    const CHUNK_SIZE = isNgrok ? 10 * 1024 * 1024 : 100 * 1024 * 1024;
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    let completedChunks = 0;
 
-    for (let i = 0; i < totalChunks; i++) {
+    const uploadChunk = async (i: number) => {
       const start = i * CHUNK_SIZE;
-      const end = Math.min(start + CHUNK_SIZE, file.size);
-      const blob = file.slice(start, end);
-
+      const blob = file.slice(start, Math.min(start + CHUNK_SIZE, file.size));
       const fd = new FormData();
       fd.append('uploadId', uploadId);
       fd.append('chunkIndex', String(i));
@@ -221,13 +225,25 @@ export default function App() {
         const err = await res.json().catch(() => ({ error: 'chunk failed' }));
         throw new Error(err.error || `Chunk ${i} failed`);
       }
-      setUploadProgress(Math.round(((i + 1) / totalChunks) * 95)); // 留 5% 给合并
-    }
+      completedChunks++;
+      setUploadProgress(Math.round((completedChunks / totalChunks) * 95));
+    };
 
-    // 合并
+    // Worker-pool：维持 CONCURRENCY 路并发，直到队列耗尽
+    const queue = Array.from({ length: totalChunks }, (_, i) => i);
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, totalChunks) }, async () => {
+        while (queue.length > 0) {
+          const idx = queue.shift()!;
+          await uploadChunk(idx);
+        }
+      })
+    );
+
+    // 合并分片
     const res = await apiFetch('/api/upload/complete', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         uploadId,
         totalChunks,
@@ -278,6 +294,8 @@ export default function App() {
   };
 
   const canInstallFromPhone = Boolean(installBaseUrl && !installBaseUrl.includes('localhost'));
+  // 证书横幅仅在本地自签名模式下显示（反代模式使用真实 CA 证书，无需手动信任）
+  const showCertBanner = !behindProxy && canInstallFromPhone;
   const getInstallUrl = (versionId: number) => {
     const base = canInstallFromPhone ? installBaseUrl! : window.location.origin;
     return `itms-services://?action=download-manifest&url=${encodeURIComponent(`${base}/api/manifest/${versionId}`)}`;
@@ -361,8 +379,8 @@ export default function App() {
         {/* ── 应用列表 ── */}
         {!selectedApp && (
           <>
-            {/* 证书信任提示横幅（仅非 ngrok 环境显示） */}
-            {installBaseUrl && !installBaseUrl.includes('ngrok') && (
+            {/* 证书信任提示横幅（仅本地自签名模式显示） */}
+            {showCertBanner && (
               <CyberCard className="p-4 mb-6 border-[rgba(255,255,0,0.4)] hover:border-[rgba(255,255,0,0.7)] hover:shadow-[0_0_16px_rgba(255,255,0,0.15)]" hover>
                 <div className="flex gap-4 items-start">
                   <Shield className="w-5 h-5 text-yellow-500 mt-0.5 flex-shrink-0" style={{ filter: 'drop-shadow(0 0 4px rgba(255,255,0,0.5))' }} />
@@ -572,7 +590,7 @@ export default function App() {
                         </a>
                         <p className="text-[9px] font-mono text-white/50 uppercase tracking-widest text-center">扫码或点击安装</p>
                         <p className="text-[9px] font-mono text-[#00FFFF]/50 text-center">
-                          {installBaseUrl?.includes('ngrok') ? '// ngrok 通道，可直接安装' : '// 首次安装：Safari 中先信任证书'}
+                          {behindProxy ? '// HTTPS 已由服务器证书保障' : '// 首次安装：Safari 中先信任证书'}
                         </p>
                       </>
                     ) : (

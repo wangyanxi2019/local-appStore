@@ -1,239 +1,340 @@
-# 本地 iOS IPA 分发平台 (Local AppStore)
+# iOS IPA 分发平台 (Local AppStore)
 
-## 💡 项目使用场景
+企业/团队内部 iOS 应用分发系统。上传 IPA 即可生成带二维码的安装页，手机扫码一键安装，无需 App Store 审核。
 
-本项目主要用于将 Mac 电脑作为本地的 iOS IPA 分发服务器。开发者可以通过该网页平台直接上传并管理 iOS 的 IPA 安装包，平台会自动解析包信息并生成带安装二维码的网页。
-使用 iOS 设备扫描二维码，即可直接在局域网内或通过网络穿透（如 ngrok）完成应用的无线安装，极大提升了测试和分发效率。
-
-主要适用场景：
-- 🏢 **企业内部分发**：为企业员工快速分发内部应用。
-- 🧪 **团队研发测试**：在开发人员和 QA 测试人员之间快速流转每日构建的测试包。
-- 👨‍💻 **个人开发调试**：避免繁琐的连线，快速在多台测试机上安装并验证 App。
-- 👨‍💻 **安全！安全**：不上传任何数据到云端，所有数据都在本地。
----
-
-## 📸 界面预览
+## 界面预览
 
 ![应用列表](./image/1.png)
-
 ![安装页面](./image/2.png)
-
 ![上传页面](./image/3.png)
 
 ---
 
-# 本地机器部署指南
+## 两种部署模式
 
-在另一台 Mac（如新 Mac mini）上部署本 iOS IPA 分发服务，按下面步骤即可。
+| 模式 | 场景 | 特点 |
+|------|------|------|
+| **宝塔面板反代**（推荐） | 公网/团队共享 | 真实域名 + Let's Encrypt 免费 SSL，手机无需信任证书 |
+| **局域网直连** | 个人/开发调试 | 零依赖，自签名证书，手机需一次性信任 |
 
 ---
 
-## 一、环境要求
+## 部署方案一：宝塔面板（公网，推荐）
 
-- **Node.js**：建议 25.2.1（推荐用 [nvm](https://github.com/nvm-sh/nvm) 或官网安装）
+> 以下以 **www.luya123.click** 为例。
 
-  ```
-  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-  ```
+### 1. 安装宝塔面板
 
-  ```
-  source ~/.zshrc
-  ```
-
-  ```
-  nvm -v
-  ```
-
-  ```
-  nvm install 25.2.1
-  ```
-
-  ```
-  nvm use 25.2.1
-  ```
-
-  
-
-- **npm**：随 Node 自带即可
-
-检查版本：
 ```bash
-node -v   # 建议 >= 18
-npm -v
+# CentOS / RHEL
+yum install -y wget && wget -O install.sh https://download.bt.cn/install/install_6.0.sh && sh install.sh ed8484bec
+
+# Ubuntu / Debian
+wget -O install.sh https://download.bt.cn/install/install-ubuntu_6.0.sh && bash install.sh ed8484bec
+```
+
+安装完成后打开面板地址，完成初始化。
+
+---
+
+### 2. 安装 Node.js 和 PM2
+
+宝塔面板 → **软件商店** → 搜索 **Node.js 版本管理器** → 安装。
+
+进入 Node.js 管理器，安装 **v20 LTS**（或 v18+），然后执行：
+
+```bash
+npm install -g pm2
 ```
 
 ---
 
-## 二、拿到项目代码
+### 3. 上传项目代码
 
-1. **从旧机拷贝整个项目文件夹**  
-   - 用 U 盘、网盘或 `scp` 把整个 `ios-ipa-distribution-platform` 目录拷到新机  
-   - 新机打开终端，`cd` 到该目录
+```bash
+# 宝塔默认网站目录
+cd /www/wwwroot
 
----
+# 方式一：git clone（推荐）
+git clone <你的仓库地址> local-appstore
+cd local-appstore
 
-## 三、安装依赖
+# 方式二：直接上传压缩包，通过宝塔文件管理器解压
+```
 
-在新机项目根目录执行：
+安装依赖：
 
 ```bash
 npm install
 ```
 
-（会安装 `package.json` 里所有依赖，包含 ngrok、better-sqlite3 等。）
+构建前端（生产模式必须）：
+
+```bash
+npm run build
+```
 
 ---
 
-## 四、环境配置（可选）
+### 4. 配置 .env
 
-- **不创建 .env**：服务会默认用本机局域网 IP + 自签名 HTTPS（手机需在 Safari 里信任证书）。
-- **需要自定义或固定地址时**：在项目根目录创建 `.env`，参考 `.env.example`：
+在项目根目录创建 `.env`：
 
 ```bash
-cp .env.example .env
-# 按需编辑 .env
+# 对外访问地址（与 Nginx 域名一致，必须 https://）
+APP_URL=https://www.luya123.click
+
+# 生产模式（使用 dist 目录的编译前端）
+NODE_ENV=production
+
+# 告知服务器运行在反代后面，使用 HTTP 监听并信任代理 IP
+BEHIND_PROXY=true
+
+# 每个 App 最多保留的历史版本数（超出自动清理 IPA 文件）
+KEEP_VERSIONS=5
 ```
-
-常用项：
-
-| 变量 | 说明 |
-|------|------|
-| `APP_URL` | 对外访问地址。用自签名证书时填 `https://本机IP:3000`（如 `https://192.168.10.219:3000`）。用 ngrok 时可不填。 |
-| `USE_NGROK=1` | 仅在用「ngrok 模式」时在启动命令里加，一般不必写在 .env。 |
-| `GEMINI_API_KEY` | 仅在使用 Gemini 相关功能时需要。 |
 
 ---
 
-## 五、启动服务方式
+### 5. 配置 Nginx 反向代理（宝塔面板）
 
-在项目根目录：
+宝塔面板 → **网站** → **添加站点**：
+- 域名：`luya123.click` 和 `www.luya123.click`
+- 根目录：随意（反代模式下不使用静态目录）
 
-| 场景 | 命令 | 说明 |
-|------|------|------|
-| 本机 + 局域网访问 | `npm run dev` | HTTPS 自签名，手机需在 Safari 信任证书后扫码安装。（无限速，地址固定） |
-| 手机扫码安装（推荐） | `npm run dev:ngrok` | 自动起 ngrok 隧道，用临时 HTTPS 域名，无需信任证书；启动后刷新浏览器再扫码。（有限速，地址随机） |
+添加完成后，点击站点名称 → **配置文件**，将内容替换为：
 
-首次用 ngrok 时，需先配置 authtoken（一次性）：
+```nginx
+server {
+    listen 80;
+    server_name luya123.click www.luya123.click;
+    return 301 https://www.luya123.click$request_uri;
+}
 
-```bash
-# 1. 打开 https://dashboard.ngrok.com/signup 注册
-# 2. 在 https://dashboard.ngrok.com/get-started/your-authtoken 复制 authtoken（一长串字符）
-# 3. 在终端执行（把下面的 YOUR_AUTHTOKEN 替换成你复制的整段 token）：
+server {
+    listen 443 ssl http2;
+    server_name luya123.click www.luya123.click;
+
+    # SSL 证书（第 6 步申请后宝塔自动填入路径）
+    ssl_certificate    /www/server/panel/vhost/cert/luya123.click/fullchain.pem;
+    ssl_certificate_key /www/server/panel/vhost/cert/luya123.click/privkey.pem;
+
+    ssl_protocols      TLSv1.2 TLSv1.3;
+    ssl_ciphers        ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache  shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # ── 关键：允许大 IPA 上传 ────────────────────────────────────
+    client_max_body_size 500M;
+    client_body_timeout  300s;
+
+    # ── 反向代理到 Node.js ──────────────────────────────────────
+    location / {
+        proxy_pass         http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+
+        # 上传/下载大文件时不在 Nginx 层缓冲，直接透传
+        proxy_request_buffering  off;
+        proxy_buffering          off;
+
+        proxy_read_timeout  300s;
+        proxy_send_timeout  300s;
+        proxy_connect_timeout 10s;
+    }
+
+    # ── IPA 静态文件：流式下载，不缓冲 ────────────────────────
+    location /uploads/ipas/ {
+        proxy_pass         http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host            $host;
+        proxy_set_header   X-Real-IP       $remote_addr;
+        proxy_buffering    off;
+        proxy_read_timeout 600s;
+    }
+
+    # ── 访问日志 ────────────────────────────────────────────────
+    access_log  /www/wwwlogs/luya123.click.log;
+    error_log   /www/wwwlogs/luya123.click.error.log;
+}
 ```
 
-然后安装执行：
+保存后点击 **重启 Nginx**。
 
-```
-brew install ngrok
-```
-
-```
-ngrok config add-authtoken YOUR_AUTHTOKEN
-```
-
-
-
-```bash
-npm run dev:ngrok
-```
-
-终端出现 `ngrok tunnel (HTTPS): https://xxx.ngrok-free.app` 后，在浏览器**刷新**管理页，再用手机扫页面上的二维码安装。
+> **宝塔快捷方式**：也可在「反向代理」标签页可视化配置，再手动追加 `client_max_body_size` 等参数到配置文件。
 
 ---
 
-## 六、数据与文件（换机要带上的）
+### 6. 申请 SSL 证书（Let's Encrypt）
 
-本服务**无 MySQL**，数据都在项目目录下，换机时若要「原样迁移」请一并拷贝：
+宝塔面板 → 网站 → 点击站点 → **SSL** → **Let's Encrypt** → 选择域名 → **申请**。
+
+申请成功后勾选 **强制 HTTPS**，证书路径会自动写入 Nginx 配置。
+
+---
+
+### 7. 构建并用 PM2 启动
+
+```bash
+cd /www/wwwroot/local-appstore
+
+# 首次部署（构建前端 + 启动服务器）
+npm run deploy
+
+# 之后用 PM2 托管（不再使用 deploy，避免每次重启都重新 build）
+pm2 start npm --name "ipa-store" -- run start
+
+# 保存进程列表，开机自启
+pm2 save
+pm2 startup   # 按提示执行输出的命令
+```
+
+**代码更新时**的标准流程：
+
+```bash
+git pull                    # 拉取新代码
+npm install                 # 若 package.json 有变动
+npm run build               # 重新构建前端
+pm2 restart ipa-store       # 重启服务（秒级，不停机 build）
+```
+
+常用 PM2 命令：
+
+```bash
+pm2 list                  # 查看所有进程
+pm2 logs ipa-store        # 查看日志
+pm2 restart ipa-store     # 重启
+pm2 stop ipa-store        # 停止
+```
+
+---
+
+### 8. 验证部署
+
+```bash
+# 本机测试 Node 是否在监听
+curl -s http://127.0.0.1:3000/api/apps
+
+# 公网测试
+curl -s https://www.luya123.click/api/apps
+```
+
+返回 JSON 数组即成功。打开 `https://www.luya123.click` 即可使用。
+
+---
+
+## 部署方案二：局域网直连（本地/开发）
+
+手机和电脑在同一 WiFi 下，无需公网。
+
+### 环境要求
+
+- Node.js 18+（推荐用 [nvm](https://github.com/nvm-sh/nvm)）
+
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+source ~/.zshrc
+nvm install 20
+nvm use 20
+```
+
+### 安装与启动
+
+```bash
+cd /path/to/local-appstore
+npm install
+npm run dev
+```
+
+终端会打印：
+
+```
+Server running on https://localhost:3000
+  Phone install: https://192.168.x.x:3000
+  Download cert: https://192.168.x.x:3000/api/install-cert
+```
+
+### 手机信任证书（首次）
+
+1. 手机连同一 WiFi，Safari 打开 `https://192.168.x.x:3000/api/install-cert`
+2. 提示下载描述文件 → 去**设置 → 已下载描述文件** → 安装
+3. **设置 → 通用 → 关于本机 → 证书信任设置** → 开启该证书
+
+之后扫码即可安装，无需重复操作（证书有效期 10 年）。
+
+### 可选 .env 配置
+
+```bash
+# 固定 IP（省去每次启动后看终端）
+APP_URL=https://192.168.1.100:3000
+
+# 保留最近 N 个版本
+KEEP_VERSIONS=5
+```
+
+---
+
+## 数据文件
 
 | 路径 | 说明 |
 |------|------|
-| `data.db` | SQLite 数据库（应用与版本信息）。 |
-| `uploads/` | 上传的图标和 IPA 文件（`uploads/icons/`、`uploads/ipas/`）。 |
+| `data.db` | SQLite 数据库（应用和版本信息） |
+| `uploads/icons/` | 应用图标 |
+| `uploads/ipas/` | IPA 文件 |
 
-- 若**不拷贝**：新机是全新库和空上传目录，需要重新创建应用、上传 IPA。
-- 若**要保留**：把旧机上的 `data.db` 和整个 `uploads/` 拷到新机同一项目目录下，再启动服务即可。
+**换机迁移**：将 `data.db` 和 `uploads/` 拷到新机同目录，重启服务即可。
 
----
+**清空所有数据**：
 
-## 七、一键检查清单（新机执行）
-
-```bash
-# 1. 进入项目
-cd /path/to/ios-ipa-distribution-platform
-
-# 2. 安装依赖
-npm install
-
-# 3. （可选）从旧机拷贝 data.db 和 uploads/ 后再启动
-
-# 4. 启动（二选一）
-npm run dev        # 本机 + 局域网，自签名 HTTPS
-npm run dev:ngrok  # 推荐：ngrok 临时 HTTPS，手机直接扫码安装
-```
-
-本机管理后台：浏览器打开 **http://localhost:3000**（用 ngrok 时也可用终端里打印的 ngrok 地址）。
-
----
-
-## 八、清理列表数据
-
-在项目根目录执行。
-
-**只清空应用/版本记录（保留已上传的图标和 IPA 文件）：**
 ```bash
 rm -f data.db
+rm -rf uploads/
+# 重启后自动重建
 ```
-
-**彻底清空：列表 + 所有上传的图标和 IPA：**
-```bash
-rm -f data.db
-rm -rf uploads
-```
-执行后需**重启服务**；重启后会自动生成新的空 `data.db`，以及 `uploads/icons`、`uploads/ipas` 目录。
 
 ---
 
-## 九、无法安装 app：可能原因与处理
+## 上传速度说明
 
-| 现象 / 原因 | 处理办法 |
-|-------------|----------|
-| **无法连接 localhost** | 手机访问不到电脑的 localhost。用 `npm run dev:ngrok` 获取 HTTPS 地址，或在本机设置 `APP_URL=https://本机IP:3000`（与手机同一 WiFi）。 |
-| **证书无效 / 不受信任** | 用 **ngrok**：`npm run dev:ngrok`，用生成的 `https://xxx.ngrok-free.app` 扫码，一般无需信任证书。若用本机 HTTPS：在手机 Safari 先打开该地址并接受证书，再扫码安装。 |
-| **提示「无法安装，请稍后再试」** | 多为 manifest 或 IPA 下载异常。确认：① 用 ngrok 或 HTTPS 访问；② 重启服务后刷新浏览器再生成二维码；③ 同一 WiFi、无代理/VPN 干扰。 |
-| **IPA 签名 / 描述文件问题** | **开发包 / Ad Hoc**：当前设备的 UDID 必须在描述文件中，且未超设备数限制。**企业包**：企业证书和描述文件需有效、未过期。在 Xcode/开发者网站检查描述文件与设备列表。 |
-| **设备已装过同 Bundle ID 的旧版** | 在 iPhone：设置 → 通用 → VPN 与设备管理，删除旧描述文件或先卸载旧应用，再重新扫码安装。 |
-| **网络 / 环境** | 手机和运行服务的电脑在同一 WiFi；若用 ngrok，启动后等隧道就绪再刷新页面、再扫码。 |
+上传采用 **10 MB 分片 + 4 路并发**策略：
 
-优先用 **`npm run dev:ngrok`** 并刷新页面后扫码，可排除大部分「无法连接」「证书无效」类问题；若仍失败，多半是 **IPA 签名或描述文件** 与当前设备不匹配，需在苹果开发者后台或 Xcode 里核对。
+- 单个 100 MB IPA 拆为 10 个分片，4 路同时上传，理论速度约为串行的 2-4 倍
+- 分片失败仅重传该片，不影响已上传部分
+- 进度条精度高（每完成一个分片更新一次）
+
+> 实际速度取决于网络带宽。宝塔反代模式下已配置 `proxy_request_buffering off`，上传数据实时透传到 Node.js，不会因 Nginx 缓冲引入额外延迟。
 
 ---
 
-## 十、常见问题
+## 常见问题
 
-- **手机提示无法连接 / 证书无效**  
-  - 用 `npm run dev:ngrok` 获得临时 HTTPS 域名，一般可避免证书问题。  
-  - 若用 `npm run dev`，需在手机 Safari 先打开 `https://本机IP:3000` 并信任证书，再扫码。
+| 现象 | 处理 |
+|------|------|
+| 手机提示「无法安装」 | 确认用 HTTPS 访问；宝塔模式检查 Nginx 日志；本地模式检查证书是否信任 |
+| 上传失败 / 超时 | 检查 Nginx `client_max_body_size`（需 ≥ IPA 文件大小）；`proxy_read_timeout` 建议 300s+ |
+| 证书报错（本地模式） | 重新下载 `/api/install-cert` 并信任；或删除 `ssl/` 目录让服务重新生成 |
+| 端口被占用 | `lsof -ti :3000 \| xargs kill -9` |
+| PM2 启动失败 | `pm2 logs ipa-store` 查看详细错误；确认 `.env` 中 `NODE_ENV=production` 且已 `npm run build` |
+| 域名无法访问 | 检查服务器安全组/防火墙是否放行 80/443 端口；宝塔面板 → 安全 → 放行端口 |
 
-- **无法安装 app（综合排查）**  
-  - 见**第九节「无法安装 app：可能原因与处理」**。
+---
 
-- **ngrok 报 "tunnel already exists"**  
-  - 已改为直接跑 ngrok 二进制，一般不会出现；若仍有，先执行 `pkill -f ngrok` 再重新 `npm run dev:ngrok`。
+## 项目结构
 
-- **Vite 报 host not allowed**  
-  - 已在 `vite.config.ts` 中设置 `server.allowedHosts: true`，用 ngrok 域名访问不会被拦截；若仍报错，确认已重启 `npm run dev:ngrok`。
-
-- **端口被占用 `EADDRINUSE: address already in use 0.0.0.0:3000`**  
-  先杀掉占用端口的进程，再重新启动：
-
-  ```bash
-  # 一键杀掉 3000 和 24678 端口上的进程
-  lsof -ti :3000 | xargs kill -9 2>/dev/null; lsof -ti :24678 | xargs kill -9 2>/dev/null; echo "done"
-  ```
-
-  ```bash
-  # 然后重新启动
-  npm run dev:ngrok
-  ```
-
-按上述步骤在新 Mac mini 上即可部署并运行同一套服务；数据与上传文件记得按需拷贝 `data.db` 和 `uploads/`。清理数据见**第八节**。
+```
+├── server.ts          # Express 服务端（API + 静态文件）
+├── src/
+│   └── App.tsx        # React 前端
+├── uploads/           # 上传文件（.gitignore 中）
+├── ssl/               # 本地自签名证书（.gitignore 中）
+├── data.db            # SQLite 数据库（.gitignore 中）
+├── .env               # 环境配置（.gitignore 中）
+└── dist/              # 构建产物（npm run build 生成）
+```
