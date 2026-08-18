@@ -214,6 +214,7 @@ export default function App() {
     fd.append('notes', notes);
 
     const xhr = new XMLHttpRequest();
+    xhr.timeout = 10 * 60 * 1000;
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable)
         setUploadProgress(Math.round((e.loaded / e.total) * 100));
@@ -222,12 +223,20 @@ export default function App() {
       if (xhr.status >= 200 && xhr.status < 300) {
         setUploadProgress(100);
         resolve();
-      } else {
-        const err = JSON.parse(xhr.responseText || '{}');
-        reject(new Error(err.error || 'Upload failed'));
+        return;
       }
+      let message = `上传失败 (HTTP ${xhr.status})`;
+      try {
+        const err = JSON.parse(xhr.responseText || '{}');
+        if (err.error) message = err.error;
+      } catch {
+        if (xhr.status === 413) message = '文件过大：请在 Nginx 配置 client_max_body_size 500M';
+        else if (xhr.status === 504) message = '网关超时：请增大 Nginx proxy_read_timeout';
+      }
+      reject(new Error(message));
     };
-    xhr.onerror = () => reject(new Error('Network error'));
+    xhr.onerror = () => reject(new Error('网络错误，请检查连接'));
+    xhr.ontimeout = () => reject(new Error('上传超时，请检查 Nginx 超时与文件大小限制'));
     xhr.open('POST', '/api/upload/ipa');
     xhr.send(fd);
   });
@@ -339,9 +348,6 @@ export default function App() {
               <h1 className="text-sm font-mono font-bold tracking-[0.2em] neon-cyan cyber-flicker">
                 {selectedApp ? selectedApp.name : 'iOS 安装包分发'}
               </h1>
-              {!selectedApp && (
-                <p className="text-[10px] font-mono text-[#FFFFFF] tracking-widest">作者：汪继红</p>
-              )}
             </div>
           </div>
 
@@ -791,7 +797,7 @@ export default function App() {
                     <div className="space-y-1.5">
                       <div className="flex justify-between items-center">
                         <span className="text-[10px] font-mono text-[#00FFFF]/70 uppercase tracking-widest animate-pulse">
-                          {uploadProgress < 100 ? `// 传输中 ${uploadProgress}%` : '// 合并中...'}
+                          {uploadProgress < 100 ? `// 传输中 ${uploadProgress}%` : '// 服务器处理中...'}
                         </span>
                         <span className="text-[10px] font-mono text-white/40">{uploadProgress}%</span>
                       </div>
